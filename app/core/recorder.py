@@ -15,6 +15,7 @@ class RecordingState(Enum):
     RECORDING = "錄音中"
     TRANSCRIBING = "轉寫中"
     POLISHING = "潤稿中"
+    TRANSLATING = "翻譯中"
     DONE = "完成"
     ERROR = "錯誤"
 
@@ -69,8 +70,8 @@ class AudioRecorder:
         with self._lock:
             self._stream = stream
 
-    def stop(self) -> bytes:
-        """Stop recording and return WAV bytes."""
+    def stop(self, as_wav: bool = True) -> bytes | np.ndarray:
+        """Stop recording and return WAV bytes or raw float32 ndarray."""
         with self._lock:
             self._recording = False
             stream = self._stream
@@ -91,9 +92,12 @@ class AudioRecorder:
             self._frames = []
 
         if not frames:
-            return b""
+            return b"" if as_wav else np.array([], dtype=np.float32)
 
         audio = np.concatenate(frames, axis=0)
+        if not as_wav:
+            return audio.astype(np.float32, copy=False)
+
         audio_int16 = (audio * 32767).astype(np.int16)
 
         buf = io.BytesIO()

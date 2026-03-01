@@ -1,10 +1,16 @@
-"""Configuration loading and persistence helpers."""
+﻿"""Configuration loading and persistence helpers."""
+
+from __future__ import annotations
+
+import contextlib
 import json
 import os
 import tempfile
 import threading
+import warnings
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config.json"
 
@@ -71,7 +77,6 @@ def _normalize_config(raw: Any) -> dict:
         else:
             normalized[key] = candidate if isinstance(candidate, type(default_value)) else default_value
 
-    # Keep unknown keys so future fields are not dropped.
     for key, value in raw.items():
         if key not in normalized:
             normalized[key] = value
@@ -93,25 +98,77 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
             os.fsync(temp_file.fileno())
         os.replace(temp_path, path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(temp_path)
-        except OSError:
-            pass
         raise
 
 
+def _corrupt_backup_path(path: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return path.with_name(f"{path.name}.corrupt.{timestamp}")
+
+
+def _quarantine_corrupt_json(path: Path, exc: Exception) -> None:
+    backup = _corrupt_backup_path(path)
+    try:
+        path.replace(backup)
+        warnings.warn(f"Corrupt JSON moved to: {backup} ({exc})")
+    except OSError:
+        warnings.warn(f"Corrupt JSON detected but failed to backup: {path} ({exc})")
+
+
+def _lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    lock_path = _lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_path, "a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return _normalize_config(data)
-        except Exception:
-            pass
-    return DEFAULT_CONFIG.copy()
+    with _CONFIG_LOCK:
+        if CONFIG_PATH.exists():
+            with _file_lock(CONFIG_PATH):
+                try:
+                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return _normalize_config(data)
+                except json.JSONDecodeError as exc:
+                    _quarantine_corrupt_json(CONFIG_PATH, exc)
+                except OSError:
+                    pass
+        return DEFAULT_CONFIG.copy()
 
 
 def save_config(config: dict) -> None:
     normalized = _normalize_config(config)
     with _CONFIG_LOCK:
-        _atomic_write_json(CONFIG_PATH, normalized)
+        with _file_lock(CONFIG_PATH):
+            _atomic_write_json(CONFIG_PATH, normalized)

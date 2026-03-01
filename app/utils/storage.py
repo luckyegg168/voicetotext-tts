@@ -1,12 +1,17 @@
-"""History and dictionary storage helpers."""
+﻿"""History and dictionary storage helpers."""
+
+from __future__ import annotations
+
+import contextlib
 import json
 import os
 import tempfile
 import threading
 import uuid
+import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 HISTORY_PATH = Path(__file__).parent.parent.parent / "history.json"
 DICT_PATH = Path(__file__).parent.parent.parent / "dictionary.json"
@@ -30,11 +35,58 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
             os.fsync(temp_file.fileno())
         os.replace(temp_path, path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(temp_path)
-        except OSError:
-            pass
         raise
+
+
+def _corrupt_backup_path(path: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return path.with_name(f"{path.name}.corrupt.{timestamp}")
+
+
+def _quarantine_corrupt_json(path: Path, exc: Exception) -> None:
+    backup = _corrupt_backup_path(path)
+    try:
+        path.replace(backup)
+        warnings.warn(f"Corrupt JSON moved to: {backup} ({exc})")
+    except OSError:
+        warnings.warn(f"Corrupt JSON detected but failed to backup: {path} ({exc})")
+
+
+def _lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    lock_path = _lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_path, "a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_json(path: Path, fallback: Any) -> Any:
@@ -43,7 +95,10 @@ def _load_json(path: Path, fallback: Any) -> Any:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except json.JSONDecodeError as exc:
+        _quarantine_corrupt_json(path, exc)
+        return fallback
+    except OSError:
         return fallback
 
 
@@ -130,12 +185,14 @@ def _save_history_unlocked(records: list[dict]) -> None:
 
 def load_history() -> list[dict]:
     with _HISTORY_LOCK:
-        return _load_history_unlocked()
+        with _file_lock(HISTORY_PATH):
+            return _load_history_unlocked()
 
 
 def save_history(records: list[dict]) -> None:
     with _HISTORY_LOCK:
-        _save_history_unlocked(records)
+        with _file_lock(HISTORY_PATH):
+            _save_history_unlocked(records)
 
 
 def add_history_record(original: str, polished: str, template: str) -> dict:
@@ -150,7 +207,6 @@ def add_history_record(original: str, polished: str, template: str) -> dict:
         }
     )
     if record is None:
-        # Unreachable due fixed shape above, kept defensive.
         record = {
             "id": str(uuid.uuid4()),
             "timestamp": datetime.now().isoformat(),
@@ -161,9 +217,10 @@ def add_history_record(original: str, polished: str, template: str) -> dict:
         }
 
     with _HISTORY_LOCK:
-        records = _load_history_unlocked()
-        records.insert(0, record)
-        _save_history_unlocked(records[:_MAX_HISTORY_RECORDS])
+        with _file_lock(HISTORY_PATH):
+            records = _load_history_unlocked()
+            records.insert(0, record)
+            _save_history_unlocked(records[:_MAX_HISTORY_RECORDS])
 
     return record
 
@@ -174,20 +231,23 @@ def delete_history_record(record_id: str) -> None:
         return
 
     with _HISTORY_LOCK:
-        records = _load_history_unlocked()
-        filtered = [record for record in records if record.get("id") != target]
-        _save_history_unlocked(filtered)
+        with _file_lock(HISTORY_PATH):
+            records = _load_history_unlocked()
+            filtered = [record for record in records if record.get("id") != target]
+            _save_history_unlocked(filtered)
 
 
 def load_dictionary() -> dict[str, str]:
     with _DICT_LOCK:
-        return _normalize_dictionary(_load_json(DICT_PATH, {}))
+        with _file_lock(DICT_PATH):
+            return _normalize_dictionary(_load_json(DICT_PATH, {}))
 
 
 def save_dictionary(words: dict[str, str]) -> None:
     normalized = _normalize_dictionary(words)
     with _DICT_LOCK:
-        _atomic_write_json(DICT_PATH, normalized)
+        with _file_lock(DICT_PATH):
+            _atomic_write_json(DICT_PATH, normalized)
 
 
 def apply_dictionary(text: str) -> str:

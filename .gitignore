@@ -12,3 +12,8 @@ env/
 Thumbs.db
 
 .claude/
+
+# Local runtime data/locks
+.*.lock
+dictionary.json
+*.corrupt.*

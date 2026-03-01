@@ -1,5 +1,7 @@
 ﻿"""主視窗 — 首頁（儀表板 + 設定）"""
+import logging
 import threading
+import tkinter as tk
 from pathlib import Path
 import customtkinter as ctk
 
@@ -16,6 +18,7 @@ from app.utils.storage import (
 from app.utils.clipboard import paste_to_foreground, copy_to_clipboard
 
 APP_NAME = "Steven's Voice Workspace"
+LOGGER = logging.getLogger(__name__)
 
 
 def _auto_detect_template(cfg: dict) -> dict:
@@ -480,7 +483,7 @@ class HomePage(ctk.CTkFrame):
                 width=55,
                 height=24,
                 font=ctk.CTkFont(size=12),
-                command=lambda a=attr: copy_to_clipboard(getattr(self, a).get("1.0", "end").strip()),
+                command=lambda a=attr: self._copy_text(getattr(self, a).get("1.0", "end").strip()),
             ).pack(side="right")
 
             tb = ctk.CTkTextbox(col, font=ctk.CTkFont(size=13), wrap="word")
@@ -507,11 +510,20 @@ class HomePage(ctk.CTkFrame):
         self._set_original(content)
         self._show_toast(f"已載入：{Path(path).name}")
 
+    def _copy_text(self, text: str):
+        if not text:
+            self._show_toast("沒有可複製的內容")
+            return
+        if not copy_to_clipboard(text):
+            self._show_error("複製失敗：請安裝 pyperclip")
+            return
+        self._show_toast("已複製到剪貼簿")
+
     def _can_start_action(self, action_name: str) -> bool:
         if self._state == RecordingState.RECORDING:
             self._set_translate_result(f"⚠ 錄音中，請先停止錄音再執行「{action_name}」。")
             return False
-        if self._state in (RecordingState.TRANSCRIBING, RecordingState.POLISHING):
+        if self._state in (RecordingState.TRANSCRIBING, RecordingState.POLISHING, RecordingState.TRANSLATING):
             self._set_translate_result(f"⚠ 目前正在處理語音，請稍後再執行「{action_name}」。")
             return False
         return True
@@ -571,14 +583,15 @@ class HomePage(ctk.CTkFrame):
                 )
                 self._safe_after(lambda t=polished: self._set_polished(t))
                 if cfg.get("auto_translate", False):
-                    self._safe_after(lambda: self._do_translate(skip_state_guard=True))
+                    self._translate_in_worker(cfg, original_text=original_text, polished_text=polished)
                 add_history_record(original_text, polished, cfg.get("template", "general"))
                 if cfg.get("auto_paste", True):
-                    paste_to_foreground(polished)
+                    if not paste_to_foreground(polished):
+                        self._safe_after(lambda: self._show_error("自動貼上不可用：請安裝 pyperclip/pyautogui"))
                 self._safe_after(lambda: self._set_state(RecordingState.DONE))
                 self._safe_after(self._refresh_history_cache)
                 self._safe_after(self._update_stats)
-                self.after(2000, lambda: self._set_state(RecordingState.IDLE))
+                self._safe_after(lambda: self._set_state(RecordingState.IDLE), delay_ms=2000)
             except Exception as e:
                 self._safe_after(lambda err=str(e): self._show_error(err))
 
@@ -588,8 +601,32 @@ class HomePage(ctk.CTkFrame):
         """設定頁更改預設翻譯語系時，同步更新工具列的翻譯語言選單"""
         self._translate_lang_var.set(lang)
 
+    def _translate_in_worker(self, cfg: dict, original_text: str, polished_text: str):
+        target = self._translate_lang_var.get()
+        src = self._translate_src_var.get()
+        text = polished_text if src == "整理後" else original_text
+        if not text.strip():
+            return
+        self._safe_after(lambda: self._set_state(RecordingState.TRANSLATING))
+        self._safe_after(lambda t=target: self._set_translate_result(f"翻譯中（{t}）..."))
+        try:
+            api_key, base_url, model = self._resolve_polish_api(cfg)
+            result = translate(
+                text,
+                target_lang=target,
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+            )
+            self._safe_after(lambda r=result: self._set_translate_result(r))
+        except Exception as e:
+            self._safe_after(lambda err=str(e): self._set_translate_result(f"❌ {err}"))
+
     def _do_translate(self, skip_state_guard: bool = False):
         """執行翻譯"""
+        if self._state == RecordingState.TRANSLATING:
+            self._set_translate_result("⚠ 目前正在翻譯，請稍後再試。")
+            return
         if not skip_state_guard and not self._can_start_action("翻譯"):
             return
 
@@ -602,6 +639,7 @@ class HomePage(ctk.CTkFrame):
 
         target = self._translate_lang_var.get()
         cfg_snapshot = self._get_current_config()
+        self._set_state(RecordingState.TRANSLATING)
         self._set_translate_result(f"翻譯中（{target}）...")
 
         def _do(cfg: dict, content_text: str, target_lang: str):
@@ -617,6 +655,9 @@ class HomePage(ctk.CTkFrame):
                 self._safe_after(lambda r=result: self._set_translate_result(r))
             except Exception as e:
                 self._safe_after(lambda err=str(e): self._set_translate_result(f"❌ {err}"))
+            finally:
+                self._safe_after(lambda: self._set_state(RecordingState.DONE))
+                self._safe_after(lambda: self._set_state(RecordingState.IDLE), delay_ms=1200)
 
         threading.Thread(target=_do, args=(cfg_snapshot, text, target), daemon=True).start()
 
@@ -642,6 +683,8 @@ class HomePage(ctk.CTkFrame):
             self._start_recording()
         elif self._state == RecordingState.RECORDING:
             self._stop_and_process()
+        else:
+            self._set_translate_result(f"⚠ 目前狀態為「{self._state.value}」，請稍候再操作。")
 
     def _start_recording(self):
         import time
@@ -690,11 +733,6 @@ class HomePage(ctk.CTkFrame):
 
         def _process(cfg: dict):
             try:
-                audio_bytes = self._recorder.stop()
-                if not audio_bytes:
-                    self._safe_after(lambda: self._show_error("未錄到音訊，請再試一次"))
-                    return
-
                 # 根據前景視窗標題自動切換情境模板
                 if cfg.get("auto_switch_template", True):
                     cfg = _auto_detect_template(cfg)
@@ -702,10 +740,20 @@ class HomePage(ctk.CTkFrame):
                 # 轉寫
                 self._safe_after(lambda: self._set_state(RecordingState.TRANSCRIBING))
                 whisper_src = cfg.get("whisper_source", "openai")
+                audio_payload = self._recorder.stop(
+                    as_wav=(whisper_src != "本地 (GPU)")
+                )
+                if whisper_src == "本地 (GPU)":
+                    if getattr(audio_payload, "size", 0) == 0:
+                        self._safe_after(lambda: self._show_error("未錄到音訊，請再試一次"))
+                        return
+                elif not audio_payload:
+                    self._safe_after(lambda: self._show_error("未錄到音訊，請再試一次"))
+                    return
 
                 if whisper_src == "本地 (GPU)":
                     original = transcribe_local(
-                        audio_bytes,
+                        audio_payload,
                         model_size=cfg.get("whisper_local_model", "large-v3"),
                         language=cfg.get("transcription_language", "auto"),
                         device=cfg.get("whisper_device", "cuda"),
@@ -716,7 +764,11 @@ class HomePage(ctk.CTkFrame):
                     if not openai_key:
                         self._safe_after(lambda: self._show_error("Whisper 轉寫需要 OpenAI API Key"))
                         return
-                    original = transcribe(audio_bytes, api_key=openai_key, language=cfg.get("transcription_language", "auto"))
+                    original = transcribe(
+                        audio_payload,
+                        api_key=openai_key,
+                        language=cfg.get("transcription_language", "auto"),
+                    )
 
                 original = apply_dictionary(original)
                 self._safe_after(lambda t=original: self._set_original(t))
@@ -739,16 +791,17 @@ class HomePage(ctk.CTkFrame):
                 )
                 self._safe_after(lambda t=polished: self._set_polished(t))
                 if cfg.get("auto_translate", False):
-                    self._safe_after(lambda: self._do_translate(skip_state_guard=True))
+                    self._translate_in_worker(cfg, original_text=original, polished_text=polished)
 
                 add_history_record(original, polished, cfg.get("template", "general"))
                 if cfg.get("auto_paste", True):
-                    paste_to_foreground(polished)
+                    if not paste_to_foreground(polished):
+                        self._safe_after(lambda: self._show_error("自動貼上不可用：請安裝 pyperclip/pyautogui"))
 
                 self._safe_after(lambda: self._set_state(RecordingState.DONE))
                 self._safe_after(self._update_stats)
                 self._safe_after(self._refresh_history_cache)
-                self.after(2000, lambda: self._set_state(RecordingState.IDLE))
+                self._safe_after(lambda: self._set_state(RecordingState.IDLE), delay_ms=2000)
 
             except Exception as e:
                 self._safe_after(lambda err=str(e): self._show_error(err))
@@ -757,11 +810,17 @@ class HomePage(ctk.CTkFrame):
 
     # ─── UI 更新 ─────────────────────────────────────────────────
     def _safe_after(self, callback, delay_ms: int = 0):
-        """Schedule UI callback and swallow errors during window teardown."""
+        """Schedule UI callback safely from any thread."""
         try:
-            self.after(delay_ms, callback)
-        except Exception:
-            pass
+            if delay_ms <= 0:
+                self.after(0, callback)
+            else:
+                self.after(0, lambda: self.after(delay_ms, callback))
+        except tk.TclError:
+            # Window is closing/destroyed.
+            return
+        except Exception as exc:
+            LOGGER.exception("Failed to schedule UI callback: %s", exc)
 
     def _set_state(self, state: RecordingState):
         self._state = state
@@ -770,6 +829,7 @@ class HomePage(ctk.CTkFrame):
             RecordingState.RECORDING:   "#e67e22",
             RecordingState.TRANSCRIBING:"#3498db",
             RecordingState.POLISHING:   "#9b59b6",
+            RecordingState.TRANSLATING: "#16a085",
             RecordingState.DONE:        "#2ecc71",
             RecordingState.ERROR:       "#e74c3c",
         }.get(state, "#3498db")
@@ -779,6 +839,7 @@ class HomePage(ctk.CTkFrame):
             RecordingState.RECORDING,
             RecordingState.TRANSCRIBING,
             RecordingState.POLISHING,
+            RecordingState.TRANSLATING,
         ) else "normal"
         for btn_name in ("_polish_btn", "_translate_btn", "_save_polished_btn"):
             btn = getattr(self, btn_name, None)
@@ -804,7 +865,7 @@ class HomePage(ctk.CTkFrame):
     def _show_error(self, msg: str):
         self._set_state(RecordingState.ERROR)
         self._set_polished(f"❌ 錯誤：{msg}")
-        self.after(3000, lambda: self._set_state(RecordingState.IDLE))
+        self._safe_after(lambda: self._set_state(RecordingState.IDLE), delay_ms=3000)
 
     def _update_stats(self):
         self._words_card.configure(text=str(get_total_word_count()))
@@ -832,7 +893,14 @@ class HomePage(ctk.CTkFrame):
         model = self._whisper_model_var.get()
 
         def _check():
-            cached = is_whisper_model_cached(model)
+            try:
+                cached = is_whisper_model_cached(model)
+            except Exception as e:
+                self._safe_after(lambda err=str(e): self._whisper_model_status_label.configure(
+                    text=f"❌ 模型檢查失敗：{err}", text_color="#e74c3c"))
+                self._safe_after(lambda: self._whisper_download_btn.configure(
+                    state="normal", text="⬇ 下載模型", fg_color=("#3B8ED0", "#1F6AA5")))
+                return
             if cached:
                 self._safe_after(lambda: self._whisper_model_status_label.configure(
                     text=f"✅ {model} 已下載", text_color="#2ecc71"))
@@ -883,14 +951,21 @@ class HomePage(ctk.CTkFrame):
         api_base = self._get_ollama_base()
 
         def _fetch():
-            if not is_ollama_running(api_base):
-                self._safe_after(lambda: self._ollama_status_label.configure(
-                    text="❌ Ollama 未執行，請先啟動 Ollama", text_color="#e74c3c"))
-                return
-            models = list_ollama_models(api_base)
-            if not models:
-                self._safe_after(lambda: self._ollama_status_label.configure(
-                    text="⚠ 尚無已安裝模型，請先 ollama pull", text_color="#e67e22"))
+            try:
+                if not is_ollama_running(api_base):
+                    self._safe_after(lambda: self._ollama_status_label.configure(
+                        text="❌ Ollama 未執行，請先啟動 Ollama", text_color="#e74c3c"))
+                    return
+                models = list_ollama_models(api_base)
+                if not models:
+                    self._safe_after(lambda: self._ollama_status_label.configure(
+                        text="⚠ 尚無已安裝模型，請先 ollama pull", text_color="#e67e22"))
+                    return
+            except Exception as e:
+                self._safe_after(lambda err=str(e): self._ollama_status_label.configure(
+                    text=f"❌ 模型讀取失敗：{err}", text_color="#e74c3c"))
+                self._safe_after(lambda: self._ollama_pull_btn.configure(
+                    state="normal", text="⬇ 下載模型", fg_color=("#3B8ED0", "#1F6AA5")))
                 return
 
             def _update(ms=models):
@@ -915,11 +990,18 @@ class HomePage(ctk.CTkFrame):
         api_base = self._get_ollama_base()
 
         def _check():
-            if not is_ollama_running(api_base):
-                self._safe_after(lambda: self._ollama_status_label.configure(
-                    text="❌ Ollama 未執行", text_color="#e74c3c"))
+            try:
+                if not is_ollama_running(api_base):
+                    self._safe_after(lambda: self._ollama_status_label.configure(
+                        text="❌ Ollama 未執行", text_color="#e74c3c"))
+                    return
+                installed = list_ollama_models(api_base)
+            except Exception as e:
+                self._safe_after(lambda err=str(e): self._ollama_status_label.configure(
+                    text=f"❌ 模型檢查失敗：{err}", text_color="#e74c3c"))
+                self._safe_after(lambda: self._ollama_pull_btn.configure(
+                    state="normal", text="⬇ 下載模型", fg_color=("#3B8ED0", "#1F6AA5")))
                 return
-            installed = list_ollama_models(api_base)
             # 精確比對（含 tag）或前綴比對
             found = any(m == model or m.startswith(model.split(":")[0]) for m in installed)
             if found:
@@ -1000,13 +1082,23 @@ class HomePage(ctk.CTkFrame):
     def _save_settings(self):
         old_hotkey = self._config.get("hotkey", "ctrl+shift+space")
         cfg = self._get_current_config()
-        save_config(cfg)
+        try:
+            save_config(cfg)
+        except OSError as e:
+            self._show_error(f"設定儲存失敗：{e}")
+            return
+        except Exception as e:
+            self._show_error(f"設定儲存失敗：{e}")
+            return
         if self._hotkey_manager:
             self._hotkey_manager.update_hotkey(cfg.get("hotkey", "ctrl+shift+space"))
             error = self._hotkey_manager.get_last_error()
             if error:
                 cfg["hotkey"] = old_hotkey
-                save_config(cfg)
+                try:
+                    save_config(cfg)
+                except Exception:
+                    pass
                 self._config = cfg
                 self._show_error(f"熱鍵更新失敗，已回復舊熱鍵：{error}")
                 return

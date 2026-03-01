@@ -1,61 +1,64 @@
-"""OpenAI / OpenRouter GPT 文字潤稿"""
+﻿"""OpenAI/OpenRouter text polishing and translation helpers."""
+
+from __future__ import annotations
+
+import os
+
 from openai import OpenAI
+
+CHAT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_CHAT_TIMEOUT_SECONDS", "90"))
 
 TEMPLATES: dict[str, str] = {
     "general": (
-        "你是文字潤稿助手。將以下口語錄音轉寫文字整理成通順的書面文字，"
-        "修正標點符號，移除重複詞語，但保留原意。直接輸出整理後文字，不要加任何說明。"
+        "你是中文文字潤稿助理。請將語音轉寫文字整理成可直接使用的自然書面語，"
+        "保留原意，不杜撰內容，修正標點與語句流暢度。"
     ),
     "social": (
-        "你是社群媒體內容創作助手。將以下文字改寫成適合臉書/Instagram 的貼文，"
-        "加入適當換行，語氣自然親切。直接輸出結果，不要加任何說明。"
+        "你是社群文案助理。請將輸入整理成適合社群平台發佈的自然語句，"
+        "保留原意並加強可讀性。"
     ),
     "meeting": (
-        "你是會議記錄助手。將以下口語內容整理成條列式會議記錄，"
-        "包含重要決議、行動項目。直接輸出結果，不要加任何說明。"
+        "你是會議紀錄助理。請將輸入整理成清楚、有條理的會議紀錄或重點摘要，"
+        "保留事實與關鍵結論。"
     ),
     "email": (
-        "你是專業書信助手。將以下內容改寫成正式電子郵件格式，"
-        "語氣專業有禮。直接輸出結果，不要加任何說明。"
+        "你是商務郵件助理。請將輸入整理成禮貌、清楚且可直接寄送的郵件內容，"
+        "保留原意並修正語氣與格式。"
     ),
     "video": (
-        "你是專業影片腳本編輯。將以下口語內容改寫成適合 YouTube 或短影音的腳本，"
-        "段落清晰，開場吸引人，語氣生動有個人風格，加入適當的停頓提示與轉場語。"
-        "直接輸出腳本，不要加任何說明。"
+        "你是影音腳本文案助理。請將輸入整理成口語自然、節奏清楚的影片旁白或腳本，"
+        "保持重點明確。"
     ),
     "code": (
-        "你是資深程式設計師。將以下口語描述的程式邏輯或需求，整理成清晰的技術規格說明，"
-        "條列重點步驟、函式／變數命名建議、邊界條件與注意事項。"
-        "使用繁體中文說明，保留英文技術術語與程式關鍵字。"
-        "直接輸出結果，不要加任何說明。"
+        "你是技術寫作助理。請將輸入整理成清楚、準確、可執行的技術說明，"
+        "必要時保留原始術語。"
     ),
 }
 
 OUTPUT_LANG_INSTRUCTIONS: dict[str, str] = {
     "original": "",
-    "zh": "請用繁體中文輸出。",
+    "zh": "請以繁體中文輸出。",
     "en": "Please output in English.",
 }
 
 TEMPLATE_LABELS = {
     "general": "通用",
-    "social":  "社群貼文",
-    "meeting": "會議記錄",
-    "email":   "信件",
-    "video":   "拍片腳本",
-    "code":    "程式編寫",
+    "social": "社群貼文",
+    "meeting": "會議紀錄",
+    "email": "商務郵件",
+    "video": "影音腳本",
+    "code": "技術說明",
 }
-
 
 TRANSLATE_TARGETS = {
     "英文": "Please translate the following text into natural English. Output only the translation.",
-    "日文": "以下のテキストを自然な日本語に翻訳してください。翻訳文のみ出力してください。",
-    "韓文": "다음 텍스트를 자연스러운 한국어로 번역해 주세요. 번역문만 출력하세요.",
-    "西班牙文": "Traduce el siguiente texto al español natural. Solo muestra la traducción.",
-    "法文": "Traduisez le texte suivant en français naturel. Ne retournez que la traduction.",
+    "日文": "次の文章を自然な日本語に翻訳してください。翻訳結果のみを返してください。",
+    "韓文": "다음 문장을 자연스러운 한국어로 번역하세요. 번역 결과만 출력하세요.",
+    "西班牙文": "Traduce el siguiente texto al español natural. Devuelve solo la traducción.",
+    "法文": "Traduisez le texte suivant en français naturel. Retournez uniquement la traduction.",
     "德文": "Übersetzen Sie den folgenden Text ins natürliche Deutsch. Geben Sie nur die Übersetzung aus.",
-    "繁體中文": "請將以下文字翻譯成繁體中文。只輸出翻譯結果，不要加任何說明。",
-    "簡體中文": "请将以下文字翻译成简体中文。只输出翻译结果，不要加任何说明。",
+    "繁體中文": "請將下列文字翻譯成自然的繁體中文，只輸出翻譯結果。",
+    "简体中文": "请将下列文字翻译成自然的简体中文，只输出翻译结果。",
 }
 
 
@@ -66,9 +69,9 @@ def translate(
     model: str = "gpt-4o-mini",
     base_url: str | None = None,
 ) -> str:
-    """翻譯文字到指定語言"""
+    """Translate text to target language with chat completion API."""
     if not text.strip():
-        raise ValueError("輸入文字為空")
+        raise ValueError("沒有可翻譯的文字")
 
     system_prompt = TRANSLATE_TARGETS.get(target_lang, TRANSLATE_TARGETS["英文"])
 
@@ -84,8 +87,9 @@ def translate(
             {"role": "user", "content": text},
         ],
         temperature=0.3,
+        timeout=CHAT_REQUEST_TIMEOUT_SECONDS,
     )
-    return response.choices[0].message.content.strip()
+    return (response.choices[0].message.content or "").strip()
 
 
 def polish(
@@ -96,12 +100,9 @@ def polish(
     model: str = "gpt-4o-mini",
     base_url: str | None = None,
 ) -> str:
-    """
-    使用 GPT/OpenRouter 潤稿文字。
-    base_url=None → OpenAI；base_url="https://openrouter.ai/api/v1" → OpenRouter
-    """
+    """Polish text via chat completion API."""
     if not text.strip():
-        raise ValueError("輸入文字為空")
+        raise ValueError("沒有可潤稿的文字")
 
     system_prompt = TEMPLATES.get(template, TEMPLATES["general"])
     lang_instruction = OUTPUT_LANG_INSTRUCTIONS.get(output_language, "")
@@ -120,5 +121,6 @@ def polish(
             {"role": "user", "content": text},
         ],
         temperature=0.3,
+        timeout=CHAT_REQUEST_TIMEOUT_SECONDS,
     )
-    return response.choices[0].message.content.strip()
+    return (response.choices[0].message.content or "").strip()

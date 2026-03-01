@@ -113,7 +113,7 @@ class HistoryPage(ctk.CTkFrame):
             width=60,
             height=26,
             font=ctk.CTkFont(size=12),
-            command=lambda r=record: copy_to_clipboard(r.get("polished", r.get("original", ""))),
+            command=lambda r=record: self._copy_record_text(r.get("polished", r.get("original", ""))),
         ).pack(side="left", padx=2)
 
         ctk.CTkButton(
@@ -170,6 +170,15 @@ class HistoryPage(ctk.CTkFrame):
             return
 
         self.refresh()
+
+    def _copy_record_text(self, text: str):
+        if not text:
+            messagebox.showinfo("複製", "沒有可複製的內容")
+            return
+        if not copy_to_clipboard(text):
+            messagebox.showerror("複製", "複製失敗：請安裝 pyperclip")
+            return
+        messagebox.showinfo("複製", "已複製到剪貼簿")
 
     def _export(self, fmt: str):
         try:
