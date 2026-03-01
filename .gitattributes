@@ -1,0 +1,12 @@
+# 預設：所有文字檔案儲存時使用 LF
+* text=auto eol=lf
+
+# Windows 批次檔強制使用 CRLF（否則在 Windows 無法執行）
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二進位檔案不做換行轉換
+*.jpg binary
+*.png binary
+*.ico binary
+*.wav binary

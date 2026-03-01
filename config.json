@@ -1,0 +1,21 @@
+{
+  "openai_api_key": "",
+  "openrouter_api_key": "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",
+  "api_provider": "本地 (Ollama/LM Studio)",
+  "polish_model": "",
+  "whisper_source": "本地 (GPU)",
+  "whisper_local_model": "medium",
+  "whisper_device": "cuda",
+  "local_api_url": "http://localhost:11434/v1",
+  "local_model_name": "gemma3:4b",
+  "transcription_language": "auto",
+  "output_language": "original",
+  "template": "general",
+  "auto_switch_template": true,
+  "auto_paste": true,
+  "auto_clear": true,
+  "auto_translate": false,
+  "default_translate_lang": "英文",
+  "hotkey": "ctrl+shift+space",
+  "theme": "dark"
+}
