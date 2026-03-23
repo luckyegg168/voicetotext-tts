@@ -1,27 +1,37 @@
-"""
-Steven's Voice Workspace — 主程式進入點
-自然說話，快速成文
-"""
-# ⚠ 必須在所有其他 import 之前執行 CUDA 預載入
-from app.core.cuda_setup import setup as _cuda_setup
-_cuda_setup()
+﻿"""Application entrypoint for Steven's Voice Workspace."""
+
+from __future__ import annotations
 
 import sys
+import threading
+
 import customtkinter as ctk
 
+from app.core.cuda_setup import setup as _cuda_setup
 from app.core.hotkey import HotkeyManager
-from app.ui.main_window import HomePage, InputSettingsPage, APP_NAME
-from app.ui.history_page import HistoryPage
+from app.core.model_prewarmer import prewarm_models
+from app.utils.config import load_config
 from app.ui.dict_page import DictPage
+from app.ui.history_page import HistoryPage
+from app.ui.main_window import (
+    APP_NAME,
+    AsrAppPage,
+    HomePage,
+    SettingsPage,
+    TtsAppPage,
+)
 from app.version import __version__
+
+
+_cuda_setup()
 
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME}  v{__version__}")
-        self.geometry("1100x720")
-        self.minsize(900, 600)
+        self.geometry("1180x760")
+        self.minsize(940, 620)
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -29,14 +39,13 @@ class App(ctk.CTk):
         self._hotkey_manager = HotkeyManager()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(500, self._start_prewarm)
 
     def _build_ui(self):
-        # 左側導覽列
-        sidebar = ctk.CTkFrame(self, width=148, corner_radius=0)
+        sidebar = ctk.CTkFrame(self, width=170, corner_radius=0)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
-        # 標題
         ctk.CTkLabel(
             sidebar,
             text="Steven's\nVoice",
@@ -55,22 +64,24 @@ class App(ctk.CTk):
             text_color="gray",
         ).pack(padx=16, pady=(0, 24))
 
-        # 頁面容器
         self._content = ctk.CTkFrame(self, fg_color="transparent")
         self._content.pack(side="right", fill="both", expand=True, padx=20, pady=16)
 
-        # 建立各頁面
         home_page = HomePage(self._content, hotkey_manager=self._hotkey_manager)
         self._pages: dict[str, ctk.CTkFrame] = {
-            "home": home_page,
-            "settings": InputSettingsPage(self._content, home_page=home_page),
+            "one_shot": home_page,
+            "asr_app": AsrAppPage(self._content, home_page=home_page),
+            "tts_app": TtsAppPage(self._content, home_page=home_page),
+            "settings": SettingsPage(self._content, home_page=home_page),
             "history": HistoryPage(self._content),
             "dict": DictPage(self._content),
         }
 
         nav_items = [
-            ("home", "首頁"),
-            ("settings", "輸入設定"),
+            ("one_shot", "一次完成"),
+            ("asr_app", "ASR APP"),
+            ("tts_app", "TTS APP"),
+            ("settings", "設定"),
             ("history", "歷史紀錄"),
             ("dict", "字典"),
         ]
@@ -91,22 +102,20 @@ class App(ctk.CTk):
             self._nav_buttons[key] = btn
 
         self._current_page: str | None = None
-        self._show_page("home")
+        self._show_page("one_shot")
 
     def _show_page(self, key: str):
         if self._current_page == key:
             return
-        # 隱藏舊頁面
+
         if self._current_page:
             self._pages[self._current_page].pack_forget()
             self._nav_buttons[self._current_page].configure(fg_color="transparent")
 
-        # 顯示新頁面
         self._pages[key].pack(fill="both", expand=True)
         self._nav_buttons[key].configure(fg_color=("gray75", "gray25"))
         self._current_page = key
 
-        # 歷史頁面自動重新整理
         if key == "history":
             self._pages["history"].refresh()
 
@@ -114,6 +123,22 @@ class App(ctk.CTk):
         self._hotkey_manager.stop()
         self.destroy()
         sys.exit(0)
+
+    def _start_prewarm(self) -> None:
+        """Launch background model pre-warming after UI is ready."""
+        cfg = load_config()
+        home_page = self._pages["one_shot"]
+
+        def _status_cb(msg: str, color: str) -> None:
+            self.after(0, lambda m=msg, c=color: home_page.update_model_status(m, c))
+            if "就緒" in msg or "ready" in msg.lower():
+                self.after(3000, lambda: home_page.update_model_status("", "gray"))
+
+        threading.Thread(
+            target=prewarm_models,
+            args=(cfg, _status_cb),
+            daemon=True,
+        ).start()
 
 
 def main():
