@@ -132,7 +132,7 @@ class App(ctk.CTk):
         def _status_cb(msg: str, color: str) -> None:
             self.after(0, lambda m=msg, c=color: home_page.update_model_status(m, c))
             if "就緒" in msg or "ready" in msg.lower():
-                self.after(3000, lambda: home_page.update_model_status("", "gray"))
+                self.after(0, lambda: self.after(3000, lambda: home_page.update_model_status("", "gray")))
 
         threading.Thread(
             target=prewarm_models,

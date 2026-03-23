@@ -104,7 +104,8 @@ def _get_pipeline(model_id: str, device: str):
         if len(_ASR_PIPELINE_CACHE) >= _ASR_PIPELINE_LIMIT:
             _ASR_PIPELINE_CACHE.popitem(last=False)
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         _ASR_PIPELINE_CACHE[key] = transformers.pipeline(
             task="automatic-speech-recognition",
             model=model_id,

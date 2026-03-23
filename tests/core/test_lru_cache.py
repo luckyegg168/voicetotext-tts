@@ -35,6 +35,7 @@ class TestAsrLruCache:
         with (
             patch("app.core.qwen3_asr.ensure_qwen_runtime"),
             patch("transformers.pipeline", return_value=fake_pipe),
+            patch("torch.cuda.is_available", return_value=True),
             patch("gc.collect") as mock_gc,
             patch("torch.cuda.empty_cache") as mock_cuda_empty,
         ):
@@ -115,7 +116,7 @@ class TestTtsLruCache:
         with (
             patch("app.core.qwen3_tts.ensure_qwen_runtime"),
             patch("qwen_tts.Qwen3TTSModel", mock_cls, create=True),
-            patch("torch.cuda.is_available", return_value=False),
+            patch("torch.cuda.is_available", return_value=True),
             patch("gc.collect") as mock_gc,
             patch("torch.cuda.empty_cache") as mock_cuda_empty,
         ):

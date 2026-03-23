@@ -53,7 +53,9 @@ def _run_prewarm(
     tts_device = str(cfg.get("tts_device", "cuda"))
 
     # ── ASR ──────────────────────────────────────────
-    if not qwen3_asr.is_repo_cached(asr_model):
+    if asr_model not in qwen3_asr.QWEN3_ASR_MODELS:
+        _LOGGER.warning("ASR model %r not in allowlist — skipping prewarm", asr_model)
+    elif not qwen3_asr.is_repo_cached(asr_model):
         _LOGGER.info("ASR model not cached — skipping prewarm for %s", asr_model)
     else:
         _notify(callback, f"⚡ ASR 模型載入中 ({asr_model.split('/')[-1]})...", "#e67e22")
@@ -65,7 +67,9 @@ def _run_prewarm(
             return
 
     # ── TTS ──────────────────────────────────────────
-    if not qwen3_tts.is_repo_cached(tts_model):
+    if tts_model not in qwen3_tts.QWEN3_TTS_MODELS:
+        _LOGGER.warning("TTS model %r not in allowlist — skipping prewarm", tts_model)
+    elif not qwen3_tts.is_repo_cached(tts_model):
         _LOGGER.info("TTS model not cached — skipping prewarm for %s", tts_model)
     else:
         _notify(callback, f"⚡ TTS 模型載入中 ({tts_model.split('/')[-1]})...", "#e67e22")

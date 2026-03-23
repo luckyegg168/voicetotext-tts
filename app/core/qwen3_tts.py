@@ -87,7 +87,8 @@ def _get_model(model_id: str, device: str):
         if len(_MODEL_CACHE) >= _MODEL_LIMIT:
             _MODEL_CACHE.popitem(last=False)
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         _MODEL_CACHE[key] = Qwen3TTSModel.from_pretrained(
             model_id,
             device_map=device_map,
