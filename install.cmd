@@ -1,186 +1,293 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 chcp 65001 >nul
 cd /d "%~dp0"
 
-set FW_OK=0
-set OLLAMA_INSTALLED=0
+set "LOCAL_TMP=%CD%\backups\tmp"
+if not exist "%LOCAL_TMP%" mkdir "%LOCAL_TMP%" >nul 2>&1
+set "TMP=%LOCAL_TMP%"
+set "TEMP=%LOCAL_TMP%"
+
+set "PY_SPEC="
+set "PY_EXE="
+set "PY_MAJOR="
+set "PY_MINOR="
+set "PY_PATCH="
+set "TEMP_PY=%TEMP%\_svw_py_exe.txt"
+set "TEMP_PY_VER=%TEMP%\_svw_py_ver.txt"
+set "VENV_PY=%CD%\.venv\Scripts\python.exe"
 
 echo.
-echo  ================================================
-echo   Steven's Voice Workspace  - Install
-echo  ================================================
+echo ==================================================
+echo  Steven's Voice Workspace - Install
+echo  (Qwen3-ASR + Qwen3-TTS)
+echo ==================================================
 echo.
 
-:: ════════════════════════════════════════════════
-:: 1/4  檢查 Python 版本
-:: ════════════════════════════════════════════════
-echo [1/4] 檢查 Python 環境...
-python --version >nul 2>&1
-if errorlevel 1 goto :no_python
+REM -----------------------------
+REM 1) Select Python interpreter
+REM -----------------------------
+echo [1/7] Selecting Python interpreter...
 
-for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PY_VER=%%v
-for /f "tokens=1,2 delims=." %%a in ("%PY_VER%") do (
-    set PY_MAJOR=%%a
-    set PY_MINOR=%%b
+for %%V in (3.13 3.12 3.11 3.10) do (
+  if not defined PY_SPEC (
+    py -%%V -c "import sys; print('%%d %%d %%d' %% (sys.version_info[0], sys.version_info[1], sys.version_info[2]))" > "%TEMP_PY_VER%" 2>nul
+    if not errorlevel 1 (
+      set "PY_SPEC=-%%V"
+    )
+  )
 )
+
+if not defined PY_SPEC goto :no_python
+
+for /f "tokens=1,2,3" %%a in ('type "%TEMP_PY_VER%"') do (
+  set "PY_MAJOR=%%a"
+  set "PY_MINOR=%%b"
+  set "PY_PATCH=%%c"
+)
+del "%TEMP_PY_VER%" >nul 2>&1
+
+if "%PY_MAJOR%"=="" goto :no_python
 if %PY_MAJOR% LSS 3 goto :py_old
 if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 goto :py_old
-echo  OK  Python %PY_VER%
+if %PY_MAJOR% EQU 3 if %PY_MINOR% GTR 13 goto :py_new
+
+py %PY_SPEC% -c "import sys; print(sys.executable)" > "%TEMP_PY%" 2>nul
+if not errorlevel 1 set /p PY_EXE=<"%TEMP_PY%"
+del "%TEMP_PY%" >nul 2>&1
+
+echo   OK  Using Python %PY_MAJOR%.%PY_MINOR%.%PY_PATCH%
+if defined PY_EXE echo       %PY_EXE%
 echo.
-goto :step2
 
-:no_python
-echo  [錯誤] 找不到 Python，請安裝 3.10 以上版本。
-echo         https://www.python.org/downloads/
-echo         安裝時請勾選「Add Python to PATH」
-echo.
-pause & exit /b 1
-
-:py_old
-echo  [錯誤] Python 版本過舊 (偵測到 %PY_VER%)，需要 3.10 以上。
-pause & exit /b 1
-
-:: ════════════════════════════════════════════════
-:: 2/4  升級 pip + 安裝主要套件
-:: ════════════════════════════════════════════════
-:step2
-echo [2/4] 安裝主要套件...
-python -m pip install --upgrade pip -q
-python -m pip install -r requirements.txt
-if errorlevel 1 (
-    echo.
-    echo  [錯誤] 套件安裝失敗，請檢查上方訊息。
-    pause & exit /b 1
+REM -----------------------------
+REM 2) Create/Reuse venv + install deps
+REM -----------------------------
+echo [2/7] Preparing virtual environment...
+if not exist "%VENV_PY%" (
+  py %PY_SPEC% -m venv .venv
+  if errorlevel 1 goto :venv_failed
 )
-echo  OK  主要套件安裝完成
-echo.
 
-:: ════════════════════════════════════════════════
-:: 3/4  faster-whisper（已併入 requirements.txt）
-:: ════════════════════════════════════════════════
-echo [3/4] 檢查本地語音辨識 (faster-whisper)
-echo.
-python -c "import faster_whisper" >nul 2>&1
+"%VENV_PY%" -m pip --version >nul 2>&1
 if errorlevel 1 (
-    echo  [警告] faster-whisper 尚未可用。
-    echo         請重新執行：python -m pip install -r requirements.txt
-    goto :step4
+  echo   [Info] pip not found in venv, attempting ensurepip recovery...
+  "%VENV_PY%" -m ensurepip --upgrade --default-pip >nul 2>&1
 )
-echo  OK  faster-whisper 已安裝（由 requirements.txt 提供）
-set FW_OK=1
 
-:: ════════════════════════════════════════════════
-:: 4/4  Ollama（本地 LLM）
-:: ════════════════════════════════════════════════
-:step4
-echo.
-echo [4/4] 本地大型語言模型 (Ollama)
-echo.
-echo  是否安裝 Ollama？(本機執行 Qwen / Llama 等，不需 API Key)
+"%VENV_PY%" -m pip --version >nul 2>&1
+if errorlevel 1 (
+  echo   [Info] ensurepip recovery failed, bootstrapping pip via py launcher...
+  py %PY_SPEC% -m pip --python "%VENV_PY%" install pip >nul 2>&1
+)
 
-set INSTALL_OLLAMA=
-set /p INSTALL_OLLAMA=  安裝? [Y/N] (Enter=N): 
-if "%INSTALL_OLLAMA%"=="" set INSTALL_OLLAMA=N
+"%VENV_PY%" -m pip --version >nul 2>&1
+if errorlevel 1 goto :venv_pip_failed
+
+echo   OK  venv ready: %VENV_PY%
+echo.
+
+echo [2/7] Installing requirements...
+"%VENV_PY%" -m pip install --upgrade pip
+if errorlevel 1 goto :pip_failed
+
+"%VENV_PY%" -m pip install -r requirements.txt
+if errorlevel 1 goto :pip_failed
+
+"%VENV_PY%" -m pip install -r requirements-qwen.txt
+if errorlevel 1 goto :pip_failed
+
+REM --- Ensure transformers >= 4.58.0 (required for Qwen3-ASR architecture) ---
+"%VENV_PY%" -c "import sys,importlib.metadata as m; v=m.version('transformers'); p=list(map(int,v.split('.')[:2])); sys.exit(0 if (p[0],p[1])>=(4,58) else 1)" >nul 2>&1
+if errorlevel 1 (
+  echo   transformers ^< 4.58.0 detected - installing from source for Qwen3-ASR support...
+  "%VENV_PY%" -m pip install "git+https://github.com/huggingface/transformers.git"
+  if errorlevel 1 (
+    echo   [Warning] Failed to install transformers from source. Qwen3-ASR may not work.
+  ) else (
+    echo   OK  transformers installed from source.
+  )
+) else (
+  echo   OK  transformers version OK.
+)
+
+REM --- Install CUDA PyTorch if GPU is present ---
+nvidia-smi >nul 2>&1
+if not errorlevel 1 (
+  echo   GPU detected. Installing PyTorch with CUDA 12.6 support...
+  "%VENV_PY%" -m pip install --force-reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cu126
+  if errorlevel 1 (
+    echo   [Warning] CUDA PyTorch install failed. Keeping CPU version.
+  ) else (
+    echo   OK  PyTorch CUDA installed.
+  )
+) else (
+  echo   No GPU detected. Using CPU PyTorch.
+)
+
+echo   OK  Requirements installed.
+echo.
+
+REM -----------------------------
+REM 3) Runtime import check
+REM -----------------------------
+echo [3/7] Verifying Qwen runtime packages...
+"%VENV_PY%" -c "import transformers, torch, huggingface_hub, yt_dlp, openai; print('import check ok')" >nul 2>&1
+if errorlevel 1 (
+  echo   [Warning] Some runtime packages failed import.
+  echo             Please run: .venv\Scripts\python -m pip install -r requirements.txt
+) else (
+  echo   OK  Runtime imports verified.
+)
+
+"%VENV_PY%" -c "from qwen_tts import Qwen3TTSModel; print('qwen_tts ok')" >nul 2>&1
+if errorlevel 1 (
+  echo   [Warning] qwen_tts package not importable.
+  echo             Please run: .venv\Scripts\python -m pip install -r requirements-qwen.txt
+) else (
+  echo   OK  qwen_tts import verified.
+)
+echo.
+
+REM -----------------------------
+REM 4) Optional Ollama setup
+REM -----------------------------
+echo [4/7] Optional: Install/check Ollama for local translation model
+set "INSTALL_OLLAMA="
+set /p INSTALL_OLLAMA=  Install/check Ollama now? [Y/N] Enter=N:
+if "%INSTALL_OLLAMA%"=="" set "INSTALL_OLLAMA=N"
 if /i not "%INSTALL_OLLAMA%"=="Y" goto :skip_ollama
 
-:: 已安裝？
 ollama --version >nul 2>&1
 if not errorlevel 1 (
-    echo  OK  Ollama 已安裝，略過下載。
-    set OLLAMA_INSTALLED=1
-    goto :choose_model
+  echo   OK  Ollama already installed.
+  goto :ollama_pull
 )
 
-:: 下載安裝程式
-echo.
-echo  下載 Ollama 安裝程式...
-set OLLAMA_SETUP=%TEMP%\OllamaSetup.exe
+echo   Downloading Ollama installer...
+set "OLLAMA_SETUP=%TEMP%\OllamaSetup.exe"
 curl -L --progress-bar -o "%OLLAMA_SETUP%" https://ollama.com/download/OllamaSetup.exe
 if errorlevel 1 (
-    echo  [錯誤] 下載失敗，請手動前往 https://ollama.com 安裝。
-    goto :skip_ollama
+  echo   [Warning] Failed to download Ollama installer.
+  goto :skip_ollama
 )
 
-echo  執行安裝程式（安裝完後請回到此視窗繼續）...
 start /wait "Ollama Setup" "%OLLAMA_SETUP%"
 del "%OLLAMA_SETUP%" >nul 2>&1
 
 ollama --version >nul 2>&1
-if not errorlevel 1 (
-    echo  OK  Ollama 安裝完成
-    set OLLAMA_INSTALLED=1
-    goto :choose_model
+if errorlevel 1 (
+  echo   [Warning] Ollama install not detected after setup.
+  goto :skip_ollama
 )
-echo  [警告] 安裝後仍無法偵測到 Ollama，請重新開機後再試。
-goto :skip_ollama
+echo   OK  Ollama installed.
 
-:: 選擇下載模型
-:choose_model
+:ollama_pull
 echo.
-echo  ── 下載 Ollama 模型 ───────────────────────────────────
-echo   1) qwen2.5:7b   中文優秀，推薦首選  (約 4.7 GB)
-echo   2) qwen2.5:3b   輕量版，低顯存      (約 2.0 GB)
-echo   3) gemma3:4b    Google 多語言       (約 2.5 GB)
-echo   4) llama3.2     Meta 英文強         (約 2.0 GB)
-echo   5) 輸入自訂模型名稱
-echo   6) 略過
-echo.
-
-set OLLAMA_MODEL=
-set /p OLLAMA_MODEL=  選擇 [1-6] (Enter=6): 
-if "%OLLAMA_MODEL%"=="" set OLLAMA_MODEL=6
-
-if "%OLLAMA_MODEL%"=="1" ollama pull qwen2.5:7b
-if "%OLLAMA_MODEL%"=="2" ollama pull qwen2.5:3b
-if "%OLLAMA_MODEL%"=="3" ollama pull gemma3:4b
-if "%OLLAMA_MODEL%"=="4" ollama pull llama3.2
-if "%OLLAMA_MODEL%"=="5" goto :custom_model
-if "%OLLAMA_MODEL%"=="6" echo  略過模型下載。
-goto :skip_ollama
-
-:custom_model
-set CUSTOM_MODEL=
-set /p CUSTOM_MODEL=  輸入模型名稱 (例: mistral:7b): 
-if "%CUSTOM_MODEL%"=="" (
-    echo  未輸入，略過。
-    goto :skip_ollama
+echo   Optional: pull local translation model
+set "PULL_MODEL="
+set /p PULL_MODEL=  Pull qwen2.5:3b now? [Y/N] Enter=N:
+if "%PULL_MODEL%"=="" set "PULL_MODEL=N"
+if /i "%PULL_MODEL%"=="Y" (
+  ollama pull qwen2.5:3b
 )
-ollama pull %CUSTOM_MODEL%
 
 :skip_ollama
 echo.
 
-:: ════════════════════════════════════════════════
-:: 安裝摘要
-:: ════════════════════════════════════════════════
-echo.
-echo  ================================================
-echo   安裝完成！
-echo  ================================================
-echo.
-echo   主要套件         OK  已安裝
+REM -----------------------------
+REM 5) Download Qwen models
+REM -----------------------------
+echo [5/7] Model pre-download
+set "PREDL="
+set /p PREDL=  Download ALL Qwen3 ASR/TTS models now? [Y/N] Enter=Y:
+if "%PREDL%"=="" set "PREDL=Y"
 
-if "%FW_OK%"=="1" (
-    echo   faster-whisper   OK  本機 GPU 轉寫
+if /i "%PREDL%"=="Y" (
+  "%VENV_PY%" -c "from app.core.model_downloader import download_all_models; download_all_models(status_callback=lambda m: print(m, flush=True))"
+  if errorlevel 1 (
+    echo   [Warning] Model pre-download failed. You can retry later in app settings.
+  ) else (
+    echo   OK  Model pre-download completed.
+  )
 ) else (
-    echo   faster-whisper   --  未安裝
+  echo   Skip model pre-download.
 )
-if "%OLLAMA_INSTALLED%"=="1" (
-    echo   Ollama           OK  本機 LLM
+echo.
+
+REM -----------------------------
+REM 6) Optional cleanup non-Qwen model cache
+REM -----------------------------
+echo [6/7] Optional: Cleanup non-Qwen HuggingFace model cache
+set "CLEAN_NON_QWEN="
+set /p CLEAN_NON_QWEN=  Cleanup non-Qwen ASR/TTS model cache now? [Y/N] Enter=N:
+if "%CLEAN_NON_QWEN%"=="" set "CLEAN_NON_QWEN=N"
+if /i not "%CLEAN_NON_QWEN%"=="Y" goto :skip_cleanup
+
+"%VENV_PY%" -c "from app.core.model_cache_cleanup import cleanup_non_qwen_model_cache; r=cleanup_non_qwen_model_cache(); print(f'removed={len(r.removed_dirs)} kept_qwen={len(r.kept_qwen_dirs)} failed={len(r.failed_dirs)} missing_root={r.missing_cache_root}'); import sys; sys.exit(0 if not r.failed_dirs else 1)"
+if errorlevel 1 (
+  echo   [Warning] Cache cleanup finished with failures. Please inspect manually.
 ) else (
-    echo   Ollama           --  未安裝
+  echo   OK  Cache cleanup completed.
+)
+
+:skip_cleanup
+echo.
+
+REM -----------------------------
+REM 7) Quick startup check
+REM -----------------------------
+echo [7/7] Startup smoke check...
+"%VENV_PY%" -c "import main; print('startup import ok')" >nul 2>&1
+if errorlevel 1 (
+  echo   [Warning] Startup import failed. Please run start.cmd and inspect traceback.
+) else (
+  echo   OK  App import check passed.
 )
 
 echo.
-echo  執行 start.cmd 啟動程式
-echo  ================================================
+echo ==================================================
+echo  Install finished.
+echo ==================================================
 echo.
 
-set START_NOW=
-set /p START_NOW=  立即啟動？ [Y/N] (Enter=Y): 
-if "%START_NOW%"=="" set START_NOW=Y
-if /i "%START_NOW%"=="Y" python main.py
+set "START_NOW="
+set /p START_NOW=  Start app now? [Y/N] Enter=Y:
+if "%START_NOW%"=="" set "START_NOW=Y"
+if /i "%START_NOW%"=="Y" (
+  "%VENV_PY%" main.py
+)
+goto :eof
 
-echo.
+:no_python
+echo [Error] Python 3.10-3.13 not found via py launcher.
+echo         Install Python 3.10-3.13 and ensure "py" command is available.
 pause
+exit /b 1
+
+:py_old
+echo [Error] Python %PY_MAJOR%.%PY_MINOR% is too old. Require 3.10+.
+pause
+exit /b 1
+
+:py_new
+echo [Error] Python %PY_MAJOR%.%PY_MINOR% is not yet supported. Require 3.10-3.13.
+pause
+exit /b 1
+
+:venv_failed
+echo [Error] Failed to create virtual environment.
+pause
+exit /b 1
+
+:venv_pip_failed
+echo [Error] venv created but pip is unavailable.
+echo         Please check Python installation integrity, then rerun install.cmd.
+pause
+exit /b 1
+
+:pip_failed
+echo [Error] Failed to install dependencies.
+echo         Please check network/proxy and run again.
+pause
+exit /b 1
