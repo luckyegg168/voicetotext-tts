@@ -1,4 +1,4 @@
-﻿"""Qwen3-ASR helpers (download/cache/transcribe)."""
+"""Qwen3-ASR helpers (download/cache/transcribe)."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ QWEN3_ALIGNER_MODELS = [
     "Qwen/Qwen3-ForcedAligner-0.6B",
 ]
 
-_ASR_PIPELINE_CACHE: OrderedDict[tuple[str, str], object] = OrderedDict()
-_ASR_PIPELINE_LOCK = threading.RLock()
-_ASR_PIPELINE_LIMIT = 1
+_ASR_MODEL_CACHE: OrderedDict[tuple[str, str], object] = OrderedDict()
+_ASR_MODEL_LOCK = threading.RLock()
+_ASR_MODEL_LIMIT = 1
 
 
 def _repo_to_cache_dir(repo_id: str) -> Path:
@@ -84,36 +84,38 @@ def _to_audio_np(audio_input: bytes | np.ndarray) -> np.ndarray:
     return data.astype(np.float32)
 
 
-def _device_for_pipeline(device: str) -> int:
-    return 0 if str(device).lower() == "cuda" else -1
-
-
-def _get_pipeline(model_id: str, device: str):
+def _get_model(model_id: str, device: str):
     ensure_qwen_runtime("Qwen3-ASR")
     try:
-        import transformers
+        from qwen_asr import Qwen3ASRModel
         import torch
     except ImportError as exc:
-        raise ImportError("Missing transformers; install requirements.txt first.") from exc
+        raise ImportError(
+            "Missing qwen-asr package; run: pip install qwen-asr"
+        ) from exc
 
     key = (model_id, device)
-    with _ASR_PIPELINE_LOCK:
-        if key in _ASR_PIPELINE_CACHE:
-            _ASR_PIPELINE_CACHE.move_to_end(key)
-            return _ASR_PIPELINE_CACHE[key]
-        if len(_ASR_PIPELINE_CACHE) >= _ASR_PIPELINE_LIMIT:
-            _ASR_PIPELINE_CACHE.popitem(last=False)
+    with _ASR_MODEL_LOCK:
+        if key in _ASR_MODEL_CACHE:
+            _ASR_MODEL_CACHE.move_to_end(key)
+            return _ASR_MODEL_CACHE[key]
+        if len(_ASR_MODEL_CACHE) >= _ASR_MODEL_LIMIT:
+            _ASR_MODEL_CACHE.popitem(last=False)
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        _ASR_PIPELINE_CACHE[key] = transformers.pipeline(
-            task="automatic-speech-recognition",
-            model=model_id,
-            trust_remote_code=True,
-            device=_device_for_pipeline(device),
-            torch_dtype=torch.float16,
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        device_map = "cuda:0" if str(device).lower() == "cuda" else "cpu"
+        model = Qwen3ASRModel.from_pretrained(
+            model_id,
+            dtype=torch.float16,
+            device_map=device_map,
         )
-        return _ASR_PIPELINE_CACHE[key]
+        _ASR_MODEL_CACHE[key] = model
+        return model
 
 
 def transcribe(
@@ -129,40 +131,29 @@ def transcribe(
     if audio_np.size == 0:
         raise ValueError("No audio input data.")
 
-    asr = _get_pipeline(model_id, device)
+    model = _get_model(model_id, device)
 
-    kwargs: dict = {}
+    lang = language if language and language != "auto" else None
+
+    results = model.transcribe(
+        audio=(audio_np, 16000),
+        language=lang,
+    )
+
+    if not results:
+        return "", []
+
+    result = results[0]
+    text = str(result.text).strip() if hasattr(result, "text") else str(result).strip()
+
+    chunks: list[dict] = []
     if return_segments:
-        kwargs["return_timestamps"] = True
+        segments = getattr(result, "segments", None) or []
+        for seg in segments:
+            chunks.append({
+                "start": getattr(seg, "start", None),
+                "end": getattr(seg, "end", None),
+                "text": str(getattr(seg, "text", "")).strip(),
+            })
 
-    if language and language != "auto":
-        # Not all models support language forcing; keep best-effort.
-        kwargs["generate_kwargs"] = {"language": language}
-
-    result = asr({"array": audio_np, "sampling_rate": 16000}, **kwargs)
-
-    if isinstance(result, dict):
-        text = str(result.get("text", "")).strip()
-        chunks = []
-        raw_chunks = result.get("chunks")
-        if isinstance(raw_chunks, list):
-            for item in raw_chunks:
-                if not isinstance(item, dict):
-                    continue
-                ts = item.get("timestamp") or item.get("timestamps")
-                start = None
-                end = None
-                if isinstance(ts, (list, tuple)) and len(ts) >= 2:
-                    start = float(ts[0]) if ts[0] is not None else None
-                    end = float(ts[1]) if ts[1] is not None else None
-                chunks.append({
-                    "start": start,
-                    "end": end,
-                    "text": str(item.get("text", "")).strip(),
-                })
-        return text, chunks
-
-    if isinstance(result, str):
-        return result.strip(), []
-
-    return str(result).strip(), []
+    return text, chunks

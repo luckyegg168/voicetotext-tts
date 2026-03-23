@@ -97,18 +97,12 @@ if errorlevel 1 goto :pip_failed
 "%VENV_PY%" -m pip install -r requirements-qwen.txt
 if errorlevel 1 goto :pip_failed
 
-REM --- Ensure transformers >= 4.58.0 (required for Qwen3-ASR architecture) ---
-"%VENV_PY%" -c "import sys,importlib.metadata as m; v=m.version('transformers'); p=list(map(int,v.split('.')[:2])); sys.exit(0 if (p[0],p[1])>=(4,58) else 1)" >nul 2>&1
+REM --- Install qwen-asr (provides Qwen3-ASR architecture support not yet in transformers) ---
+"%VENV_PY%" -m pip install "qwen-asr>=0.0.6"
 if errorlevel 1 (
-  echo   transformers ^< 4.58.0 detected - installing from source for Qwen3-ASR support...
-  "%VENV_PY%" -m pip install "git+https://github.com/huggingface/transformers.git"
-  if errorlevel 1 (
-    echo   [Warning] Failed to install transformers from source. Qwen3-ASR may not work.
-  ) else (
-    echo   OK  transformers installed from source.
-  )
+  echo   [Warning] Failed to install qwen-asr. ASR features may not work.
 ) else (
-  echo   OK  transformers version OK.
+  echo   OK  qwen-asr installed.
 )
 
 REM --- Install CUDA PyTorch if GPU is present ---

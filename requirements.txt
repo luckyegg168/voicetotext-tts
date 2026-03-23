@@ -9,8 +9,8 @@ pyautogui>=0.9.54
 Pillow>=10.0.0
 yt-dlp
 huggingface_hub>=0.21.0
-# transformers>=4.58.0 required for Qwen3-ASR; if not on PyPI, install.cmd falls back to git source
-transformers>=4.47.0
+# transformers pinned by qwen-asr/qwen-tts; do not upgrade manually
+transformers>=4.47.0,<5.0.0
 torch>=2.6
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
