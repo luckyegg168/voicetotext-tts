@@ -5,9 +5,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 CFG = {
     "asr_qwen3_model": "Qwen/Qwen3-ASR-0.6B",
     "asr_device": "cpu",
@@ -61,7 +58,7 @@ def test_prewarm_failure_calls_failure_callback():
 
 def test_prewarm_no_double_start():
     """Calling prewarm_models concurrently should load each model only once."""
-    from app.core.model_prewarmer import prewarm_models, _prewarm_event
+    from app.core.model_prewarmer import prewarm_models, _prewarm_lock
     from app.core import qwen3_asr, qwen3_tts
 
     load_count = {"asr": 0}
@@ -71,7 +68,9 @@ def test_prewarm_no_double_start():
         time.sleep(0.05)
         return MagicMock()
 
-    _prewarm_event.clear()
+    # Ensure lock is released before test (defensive reset)
+    if _prewarm_lock.locked():
+        _prewarm_lock.release()
 
     with (
         patch.object(qwen3_asr, "_get_pipeline", side_effect=slow_pipeline),

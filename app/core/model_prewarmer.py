@@ -8,9 +8,9 @@ from typing import Callable
 
 _LOGGER = logging.getLogger(__name__)
 
-# Global event: set while prewarm is in progress, cleared when done.
-# Prevents concurrent double-start.
-_prewarm_event = threading.Event()
+# Lock held while prewarm is running. acquire(blocking=False) is atomic,
+# preventing the check-then-set race that threading.Event has.
+_prewarm_lock = threading.Lock()
 
 
 def prewarm_models(
@@ -23,15 +23,14 @@ def prewarm_models(
         cfg: Config dict with asr_qwen3_model, asr_device, tts_qwen3_model, tts_device.
         status_callback: Called as callback(message, color_hex) on status changes.
     """
-    if _prewarm_event.is_set():
+    if not _prewarm_lock.acquire(blocking=False):
         _LOGGER.debug("Prewarm already in progress — skipping.")
         return
 
-    _prewarm_event.set()
     try:
         _run_prewarm(cfg, status_callback)
     finally:
-        _prewarm_event.clear()
+        _prewarm_lock.release()
 
 
 def _notify(callback: Callable[[str, str], None] | None, msg: str, color: str) -> None:
