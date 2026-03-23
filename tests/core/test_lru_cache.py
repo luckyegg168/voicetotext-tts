@@ -81,3 +81,49 @@ class TestAsrLruCache:
 
         call_kwargs = mock_pipeline.call_args.kwargs
         assert call_kwargs.get("torch_dtype") == torch.float16
+
+
+# ── TTS ──────────────────────────────────────────────────────────────────────
+
+class TestTtsLruCache:
+    """Tests for _get_model() LRU behaviour in qwen3_tts."""
+
+    def setup_method(self):
+        import app.core.qwen3_tts as tts_mod
+        from collections import OrderedDict
+        tts_mod._MODEL_CACHE = OrderedDict()
+
+    def test_cache_hit_does_not_reload(self):
+        import app.core.qwen3_tts as tts_mod
+        fake_model = MagicMock()
+        mock_cls = MagicMock()
+        mock_cls.from_pretrained.return_value = fake_model
+        with (
+            patch("app.core.qwen3_tts.ensure_qwen_runtime"),
+            patch("qwen_tts.Qwen3TTSModel", mock_cls, create=True),
+            patch("torch.cuda.is_available", return_value=False),
+        ):
+            tts_mod._get_model("model-a", "cpu")
+            tts_mod._get_model("model-a", "cpu")
+        assert mock_cls.from_pretrained.call_count == 1
+
+    def test_eviction_calls_cuda_empty_cache(self):
+        import app.core.qwen3_tts as tts_mod
+        fake_model = MagicMock()
+        mock_cls = MagicMock()
+        mock_cls.from_pretrained.return_value = fake_model
+        with (
+            patch("app.core.qwen3_tts.ensure_qwen_runtime"),
+            patch("qwen_tts.Qwen3TTSModel", mock_cls, create=True),
+            patch("torch.cuda.is_available", return_value=False),
+            patch("gc.collect") as mock_gc,
+            patch("torch.cuda.empty_cache") as mock_cuda_empty,
+        ):
+            tts_mod._get_model("model-a", "cpu")
+            tts_mod._get_model("model-b", "cpu")
+        mock_cuda_empty.assert_called_once()
+        mock_gc.assert_called()
+
+    def test_cache_uses_ordered_dict(self):
+        import app.core.qwen3_tts as tts_mod
+        assert isinstance(tts_mod._MODEL_CACHE, OrderedDict)
