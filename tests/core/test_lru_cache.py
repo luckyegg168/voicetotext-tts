@@ -1,8 +1,7 @@
 """LRU cache tests for qwen3_asr and qwen3_tts."""
 from __future__ import annotations
 from collections import OrderedDict
-from unittest.mock import MagicMock, call, patch
-import gc
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -14,8 +13,8 @@ class TestAsrLruCache:
 
     def setup_method(self):
         import app.core.qwen3_asr as asr_mod
-        # Clear cache before each test so tests are isolated
-        asr_mod._ASR_PIPELINE_CACHE.clear()
+        from collections import OrderedDict
+        asr_mod._ASR_PIPELINE_CACHE = OrderedDict()
 
     def test_cache_hit_does_not_reload(self):
         """Second call with same key returns cached object without loading again."""
@@ -55,6 +54,7 @@ class TestAsrLruCache:
             patch("app.core.qwen3_asr.ensure_qwen_runtime"),
             patch("transformers.pipeline", return_value=fake_pipe),
             patch("torch.cuda.empty_cache"),
+            patch("gc.collect"),   # ← add this
         ):
             asr_mod._get_pipeline("model-a", "cpu")
             asr_mod._get_pipeline("model-b", "cpu")
@@ -69,7 +69,7 @@ class TestAsrLruCache:
 
     def test_pipeline_uses_float16(self):
         """pipeline() call must pass torch_dtype=torch.float16."""
-        import torch
+        torch = pytest.importorskip("torch")
         import app.core.qwen3_asr as asr_mod
         fake_pipe = MagicMock()
         with (
